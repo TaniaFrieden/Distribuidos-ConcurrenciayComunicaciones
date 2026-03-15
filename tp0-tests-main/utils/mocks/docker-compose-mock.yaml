@@ -1,0 +1,31 @@
+version: "3.9"
+name: tp0
+services:
+  healthy-server:
+    container_name: server
+    image: python:3.9.7-slim
+    entrypoint: python3 /echo-server.py true
+    networks:
+      - testing_net
+    volumes:
+      - ./echo-server.py:/echo-server.py
+    profiles:
+      - healthy
+
+  unhealthy-server:
+    container_name: server
+    image: python:3.9.7-slim
+    entrypoint: python3 /echo-server.py false
+    networks:
+      - testing_net
+    volumes:
+      - ./echo-server.py:/echo-server.py
+    profiles:
+      - unhealthy
+
+networks:
+  testing_net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.25.125.0/24
