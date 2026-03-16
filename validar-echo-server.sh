@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/bin/sh
 
-set -euo pipefail
+set -eu
 
 readonly NOMBRE_CONTENEDOR_SERVIDOR="server"
 readonly NOMBRE_RED="tp0_testing_net"

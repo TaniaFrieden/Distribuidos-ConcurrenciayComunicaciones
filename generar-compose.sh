@@ -18,8 +18,8 @@ validar_argumentos() {
         exit 1
     fi
 
-    if ! [[ $2 =~ ^[1-9][0-9]*$ ]]; then
-        echo "La cantidad de clientes debe ser un entero positivo mayor a 0." >&2
+    if ! [[ $2 =~ ^[0-9]+$ ]]; then
+        echo "La cantidad de clientes debe ser un entero mayor o igual a 0." >&2
         exit 1
     fi
 }
