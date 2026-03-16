@@ -37,6 +37,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - LOGGING_LEVEL=DEBUG
+    volumes:
+      - ./server/config.ini:/config.ini:ro
     networks:
       - $NOMBRE_RED
 
@@ -55,6 +57,8 @@ agregar_servicio_cliente() {
     environment:
       - CLI_ID=${id_cliente}
       - CLI_LOG_LEVEL=DEBUG
+    volumes:
+      - ./client/config.yaml:/config.yaml:ro
     networks:
       - $NOMBRE_RED
     depends_on:
