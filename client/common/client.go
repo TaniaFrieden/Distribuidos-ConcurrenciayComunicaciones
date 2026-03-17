@@ -3,7 +3,9 @@ package common
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/op/go-logging"
@@ -23,6 +25,7 @@ type ClientConfig struct {
 type Client struct {
 	config ClientConfig
 	conn   net.Conn
+	mu     sync.Mutex
 }
 
 // NewClient Initializes a new client receiving the configuration
@@ -45,30 +48,102 @@ func (c *Client) createClientSocket() error {
 			c.config.ID,
 			err,
 		)
+		return err
 	}
+
+	c.mu.Lock()
 	c.conn = conn
+	c.mu.Unlock()
+
 	return nil
 }
 
+func (c *Client) closeConnection() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return
+	}
+
+	c.conn.Close()
+	c.conn = nil
+	log.Infof("action: close_socket | result: success | client_id: %v", c.config.ID)
+}
+
+func (c *Client) Close() {
+	c.closeConnection()
+}
+
+func (c *Client) isShuttingDown(stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	default:
+		return false
+	}
+}
+
 // StartClientLoop Send messages to the client until some time threshold is met
-func (c *Client) StartClientLoop() {
+func (c *Client) StartClientLoop(stop <-chan struct{}) {
 	// There is an autoincremental msgID to identify every message sent
 	// Messages if the message amount threshold has not been surpassed
 	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
-		// Create the connection the server in every loop iteration. Send an
-		c.createClientSocket()
+		if c.isShuttingDown(stop) {
+			log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+			return
+		}
 
-		// TODO: Modify the send to avoid short-write
-		fmt.Fprintf(
-			c.conn,
+		// Create the connection the server in every loop iteration. Send an
+		if err := c.createClientSocket(); err != nil {
+			if c.isShuttingDown(stop) {
+				log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+				return
+			}
+			return
+		}
+
+		message := []byte(fmt.Sprintf(
 			"[CLIENT %v] Message N°%v\n",
 			c.config.ID,
 			msgID,
-		)
+		))
+
+		for len(message) > 0 {
+			n, err := c.conn.Write(message)
+			if err != nil {
+				c.closeConnection()
+				if c.isShuttingDown(stop) {
+					log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+					return
+				}
+				log.Errorf("action: send_message | result: fail | client_id: %v | error: %v",
+					c.config.ID,
+					err,
+				)
+				return
+			}
+
+			if n == 0 {
+				c.closeConnection()
+				log.Errorf("action: send_message | result: fail | client_id: %v | error: %v",
+					c.config.ID,
+					io.ErrShortWrite,
+				)
+				return
+			}
+
+			message = message[n:]
+		}
+
 		msg, err := bufio.NewReader(c.conn).ReadString('\n')
-		c.conn.Close()
+		c.closeConnection()
 
 		if err != nil {
+			if c.isShuttingDown(stop) || err == io.EOF {
+				log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+				return
+			}
 			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
 				c.config.ID,
 				err,
@@ -82,7 +157,12 @@ func (c *Client) StartClientLoop() {
 		)
 
 		// Wait a time between sending one message and the next one
-		time.Sleep(c.config.LoopPeriod)
+		select {
+		case <-stop:
+			log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+			return
+		case <-time.After(c.config.LoopPeriod):
+		}
 
 	}
 	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
