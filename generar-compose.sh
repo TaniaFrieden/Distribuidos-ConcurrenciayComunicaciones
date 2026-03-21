@@ -26,6 +26,7 @@ validar_argumentos() {
 
 escribir_encabezado() {
     local archivo_salida=$1
+    local cantidad_clientes=$2
 
     cat <<EOF > "$archivo_salida"
 name: tp0
@@ -36,6 +37,7 @@ services:
     entrypoint: python3 /main.py
     environment:
       - PYTHONUNBUFFERED=1
+      - TOTAL_AGENCIES=$cantidad_clientes
     volumes:
       - ./server/config.ini:/config.ini:ro
     networks:
@@ -83,7 +85,7 @@ main() {
     local archivo_salida=$1
     local cantidad_clientes=$2
 
-    escribir_encabezado "$archivo_salida"
+    escribir_encabezado "$archivo_salida" "$cantidad_clientes"
 
     for ((id_cliente = 1; id_cliente <= cantidad_clientes; id_cliente++)); do
         agregar_servicio_cliente "$archivo_salida" "$id_cliente"

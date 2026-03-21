@@ -1,7 +1,8 @@
 import socket
 import logging
+import os
 
-from common.utils import Bet, store_bets
+from common.utils import Bet, has_won, load_bets, store_bets
 
 
 class Server:
@@ -12,6 +13,9 @@ class Server:
         self._server_socket.listen(listen_backlog)
         self._client_socket = None
         self._shutting_down = False
+        self._agencias_finalizadas = set()
+        self._sorteo_realizado = False
+        self._total_agencias = int(os.getenv("TOTAL_AGENCIES", "5"))
 
     def shutdown(self):
         self._shutting_down = True
@@ -60,30 +64,62 @@ class Server:
         reader = client_sock.makefile('r', encoding='utf-8', newline='\n')
 
         try:
-            apuestas = self.__recv_batch(reader)
-            store_bets(apuestas)
-            for apuesta in apuestas:
-                logging.info(
-                    f'action: apuesta_almacenada | result: success | dni: {apuesta.document} | numero: {apuesta.number}'
-                )
-            logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(apuestas)}')
-            client_sock.sendall(b'OK\n')
+            encabezado = self.__recv_line(reader)
+
+            if encabezado.startswith('BATCH|'):
+                self.__procesar_batch(encabezado, reader, client_sock)
+            elif encabezado.startswith('FIN|'):
+                self.__procesar_fin(encabezado, client_sock)
+            elif encabezado.startswith('WINNERS|'):
+                self.__procesar_consulta_ganadores(encabezado, client_sock)
+            else:
+                raise ValueError('comando invalido')
         except OSError as e:
             if not self._shutting_down:
-                logging.error(f'action: apuesta_recibida | result: fail | cantidad: 0 | error: {e}')
-                logging.error(f'action: apuesta_almacenada | result: fail | error: {e}')
                 client_sock.sendall(b'ERROR\n')
         except (ValueError, KeyError) as e:
-            logging.error(f'action: apuesta_recibida | result: fail | cantidad: 0 | error: {e}')
-            logging.error(f'action: apuesta_almacenada | result: fail | error: {e}')
             client_sock.sendall(b'ERROR\n')
         finally:
             reader.close()
             client_sock.close()
             self._client_socket = None
 
-    def __recv_batch(self, reader):
-        encabezado = self.__recv_line(reader)
+    def __procesar_batch(self, encabezado, reader, client_sock):
+        apuestas = self.__recv_batch(encabezado, reader)
+        store_bets(apuestas)
+        for apuesta in apuestas:
+            logging.info(
+                f'action: apuesta_almacenada | result: success | dni: {apuesta.document} | numero: {apuesta.number}'
+            )
+        logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(apuestas)}')
+        client_sock.sendall(b'OK\n')
+
+    def __procesar_fin(self, encabezado, client_sock):
+        _, agencia = encabezado.split('|', 1)
+        self._agencias_finalizadas.add(agencia)
+
+        if not self._sorteo_realizado and len(self._agencias_finalizadas) >= self._total_agencias:
+            self._sorteo_realizado = True
+            logging.info('action: sorteo | result: success')
+
+        client_sock.sendall(b'OK\n')
+
+    def __procesar_consulta_ganadores(self, encabezado, client_sock):
+        _, agencia = encabezado.split('|', 1)
+
+        if not self._sorteo_realizado:
+            client_sock.sendall(b'PENDING\n')
+            return
+
+        ganadores = []
+        for apuesta in load_bets():
+            if str(apuesta.agency) == agencia and has_won(apuesta):
+                ganadores.append(apuesta.document)
+
+        respuesta = "WINNERS|{}".format(len(ganadores))
+        client_sock.sendall((respuesta + "\n").encode('utf-8'))
+
+    def __recv_batch(self, encabezado, reader):
         tipo, cantidad = encabezado.split('|', 1)
         if tipo != 'BATCH':
             raise ValueError('encabezado de batch invalido')
