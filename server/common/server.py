@@ -1,6 +1,5 @@
 import socket
 import logging
-import json
 
 from common.utils import Bet, store_bets
 
@@ -58,44 +57,67 @@ class Server:
         client socket will also be closed
         """
         self._client_socket = client_sock
+        reader = client_sock.makefile('r', encoding='utf-8', newline='\n')
 
         try:
-            bet_data = json.loads(self.__recv_line(client_sock))
-            bet = Bet(
-                bet_data["agency"],
-                bet_data["first_name"],
-                bet_data["last_name"],
-                bet_data["document"],
-                bet_data["birthdate"],
-                bet_data["number"],
-            )
-            store_bets([bet])
-            logging.info(
-                f'action: apuesta_almacenada | result: success | dni: {bet.document} | numero: {bet.number}'
-            )
+            apuestas = self.__recv_batch(reader)
+            store_bets(apuestas)
+            for apuesta in apuestas:
+                logging.info(
+                    f'action: apuesta_almacenada | result: success | dni: {apuesta.document} | numero: {apuesta.number}'
+                )
+            logging.info(f'action: apuesta_recibida | result: success | cantidad: {len(apuestas)}')
             client_sock.sendall(b'OK\n')
         except OSError as e:
             if not self._shutting_down:
+                logging.error(f'action: apuesta_recibida | result: fail | cantidad: 0 | error: {e}')
                 logging.error(f'action: apuesta_almacenada | result: fail | error: {e}')
-        except (ValueError, KeyError, json.JSONDecodeError) as e:
+                client_sock.sendall(b'ERROR\n')
+        except (ValueError, KeyError) as e:
+            logging.error(f'action: apuesta_recibida | result: fail | cantidad: 0 | error: {e}')
             logging.error(f'action: apuesta_almacenada | result: fail | error: {e}')
+            client_sock.sendall(b'ERROR\n')
         finally:
+            reader.close()
             client_sock.close()
             self._client_socket = None
 
-    def __recv_line(self, client_sock):
-        chunks = []
+    def __recv_batch(self, reader):
+        encabezado = self.__recv_line(reader)
+        tipo, cantidad = encabezado.split('|', 1)
+        if tipo != 'BATCH':
+            raise ValueError('encabezado de batch invalido')
 
-        while True:
-            data = client_sock.recv(1024)
-            if not data:
-                raise OSError('connection closed before end of message')
+        cantidad_apuestas = int(cantidad)
+        if cantidad_apuestas <= 0:
+            raise ValueError('cantidad de apuestas invalida')
 
-            chunks.append(data)
-            if b'\n' in data:
-                break
+        apuestas = []
+        for _ in range(cantidad_apuestas):
+            apuestas.append(self.__parse_bet_line(self.__recv_line(reader)))
 
-        return b''.join(chunks).split(b'\n', 1)[0].decode('utf-8')
+        return apuestas
+
+    def __parse_bet_line(self, linea):
+        campos = linea.split('|')
+        if len(campos) != 6:
+            raise ValueError('cantidad de campos invalida')
+
+        return Bet(
+            campos[0],
+            campos[1],
+            campos[2],
+            campos[3],
+            campos[4],
+            campos[5],
+        )
+
+    def __recv_line(self, reader):
+        linea = reader.readline()
+        if linea == '':
+            raise OSError('connection closed before end of message')
+
+        return linea.rstrip('\n')
 
     def __accept_new_connection(self):
         """

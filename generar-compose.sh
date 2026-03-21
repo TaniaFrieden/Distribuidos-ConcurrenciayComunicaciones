@@ -47,9 +47,6 @@ EOF
 agregar_servicio_cliente() {
     local archivo_salida=$1
     local id_cliente=$2
-    local dia_nacimiento
-
-    printf -v dia_nacimiento "%02d" "$id_cliente"
 
     cat <<EOF >> "$archivo_salida"
   client${id_cliente}:
@@ -58,13 +55,9 @@ agregar_servicio_cliente() {
     entrypoint: /client
     environment:
       - CLI_ID=${id_cliente}
-      - NOMBRE=Nombre${id_cliente}
-      - APELLIDO=Apellido${id_cliente}
-      - DOCUMENTO=3000000${id_cliente}
-      - NACIMIENTO=1990-01-${dia_nacimiento}
-      - NUMERO=757${id_cliente}
     volumes:
       - ./client/config.yaml:/config.yaml:ro
+      - ./.data:/data:ro
     networks:
       - $NOMBRE_RED
     depends_on:
