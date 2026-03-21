@@ -110,6 +110,11 @@ func main() {
 		ID:            v.GetString("id"),
 		LoopAmount:    v.GetInt("loop.amount"),
 		LoopPeriod:    v.GetDuration("loop.period"),
+		FirstName:     getEnvOrDefault("NOMBRE", "Nombre"+v.GetString("id")),
+		LastName:      getEnvOrDefault("APELLIDO", "Apellido"+v.GetString("id")),
+		Document:      getEnvOrDefault("DOCUMENTO", "3000000"+v.GetString("id")),
+		Birthdate:     getEnvOrDefault("NACIMIENTO", "1990-01-01"),
+		Number:        getEnvOrDefault("NUMERO", "7574"),
 	}
 
 	client := common.NewClient(clientConfig)
@@ -124,4 +129,13 @@ func main() {
 	}()
 
 	client.StartClientLoop(stop)
+}
+
+func getEnvOrDefault(key string, fallback string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+
+	return value
 }

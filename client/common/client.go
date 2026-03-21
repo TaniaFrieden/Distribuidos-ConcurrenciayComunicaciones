@@ -2,9 +2,10 @@ package common
 
 import (
 	"bufio"
-	"fmt"
+	"encoding/json"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,11 @@ type ClientConfig struct {
 	ServerAddress string
 	LoopAmount    int
 	LoopPeriod    time.Duration
+	FirstName     string
+	LastName      string
+	Document      string
+	Birthdate     string
+	Number        string
 }
 
 // Client Entity that encapsulates how
@@ -26,6 +32,15 @@ type Client struct {
 	config ClientConfig
 	conn   net.Conn
 	mu     sync.Mutex
+}
+
+type betMessage struct {
+	Agency    string `json:"agency"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name"`
+	Document  string `json:"document"`
+	Birthdate string `json:"birthdate"`
+	Number    string `json:"number"`
 }
 
 // NewClient Initializes a new client receiving the configuration
@@ -75,6 +90,12 @@ func (c *Client) Close() {
 	c.closeConnection()
 }
 
+func (c *Client) currentConnection() net.Conn {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conn
+}
+
 func (c *Client) isShuttingDown(stop <-chan struct{}) bool {
 	select {
 	case <-stop:
@@ -86,84 +107,99 @@ func (c *Client) isShuttingDown(stop <-chan struct{}) bool {
 
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop(stop <-chan struct{}) {
-	// There is an autoincremental msgID to identify every message sent
-	// Messages if the message amount threshold has not been surpassed
-	for msgID := 1; msgID <= c.config.LoopAmount; msgID++ {
+	if c.isShuttingDown(stop) {
+		log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+		return
+	}
+
+	if err := c.createClientSocket(); err != nil {
 		if c.isShuttingDown(stop) {
 			log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
 			return
 		}
+		return
+	}
 
-		// Create the connection the server in every loop iteration. Send an
-		if err := c.createClientSocket(); err != nil {
+	conn := c.currentConnection()
+	if conn == nil {
+		log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+		return
+	}
+
+	messageData, err := json.Marshal(betMessage{
+		Agency:    c.config.ID,
+		FirstName: c.config.FirstName,
+		LastName:  c.config.LastName,
+		Document:  c.config.Document,
+		Birthdate: c.config.Birthdate,
+		Number:    c.config.Number,
+	})
+	if err != nil {
+		c.closeConnection()
+		log.Errorf("action: apuesta_enviada | result: fail | dni: %v | numero: %v | error: %v",
+			c.config.Document,
+			c.config.Number,
+			err,
+		)
+		return
+	}
+
+	message := append(messageData, '\n')
+	for len(message) > 0 {
+		n, err := conn.Write(message)
+		if err != nil {
+			c.closeConnection()
 			if c.isShuttingDown(stop) {
 				log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
 				return
 			}
-			return
-		}
-
-		message := []byte(fmt.Sprintf(
-			"[CLIENT %v] Message N°%v\n",
-			c.config.ID,
-			msgID,
-		))
-
-		for len(message) > 0 {
-			n, err := c.conn.Write(message)
-			if err != nil {
-				c.closeConnection()
-				if c.isShuttingDown(stop) {
-					log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
-					return
-				}
-				log.Errorf("action: send_message | result: fail | client_id: %v | error: %v",
-					c.config.ID,
-					err,
-				)
-				return
-			}
-
-			if n == 0 {
-				c.closeConnection()
-				log.Errorf("action: send_message | result: fail | client_id: %v | error: %v",
-					c.config.ID,
-					io.ErrShortWrite,
-				)
-				return
-			}
-
-			message = message[n:]
-		}
-
-		msg, err := bufio.NewReader(c.conn).ReadString('\n')
-		c.closeConnection()
-
-		if err != nil {
-			if c.isShuttingDown(stop) || err == io.EOF {
-				log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
-				return
-			}
-			log.Errorf("action: receive_message | result: fail | client_id: %v | error: %v",
-				c.config.ID,
+			log.Errorf("action: apuesta_enviada | result: fail | dni: %v | numero: %v | error: %v",
+				c.config.Document,
+				c.config.Number,
 				err,
 			)
 			return
 		}
 
-		log.Infof("action: receive_message | result: success | client_id: %v | msg: %v",
-			c.config.ID,
-			msg,
-		)
-
-		// Wait a time between sending one message and the next one
-		select {
-		case <-stop:
-			log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+		if n == 0 {
+			c.closeConnection()
+			log.Errorf("action: apuesta_enviada | result: fail | dni: %v | numero: %v | error: %v",
+				c.config.Document,
+				c.config.Number,
+				io.ErrShortWrite,
+			)
 			return
-		case <-time.After(c.config.LoopPeriod):
 		}
 
+		message = message[n:]
 	}
-	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+
+	response, err := bufio.NewReader(conn).ReadString('\n')
+	c.closeConnection()
+
+	if err != nil {
+		if c.isShuttingDown(stop) || err == io.EOF {
+			log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+			return
+		}
+		log.Errorf("action: apuesta_enviada | result: fail | dni: %v | numero: %v | error: %v",
+			c.config.Document,
+			c.config.Number,
+			err,
+		)
+		return
+	}
+
+	if strings.TrimSpace(response) != "OK" {
+		log.Errorf("action: apuesta_enviada | result: fail | dni: %v | numero: %v | error: invalid response",
+			c.config.Document,
+			c.config.Number,
+		)
+		return
+	}
+
+	log.Infof("action: apuesta_enviada | result: success | dni: %v | numero: %v",
+		c.config.Document,
+		c.config.Number,
+	)
 }
