@@ -1,6 +1,7 @@
 import socket
 import logging
 import os
+import threading
 
 from common.utils import Bet, has_won, load_bets, store_bets
 
@@ -11,19 +12,27 @@ class Server:
         self._server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._server_socket.bind(('', port))
         self._server_socket.listen(listen_backlog)
-        self._client_socket = None
+        self._server_socket.settimeout(1)
         self._shutting_down = False
         self._agencias_finalizadas = set()
         self._sorteo_realizado = False
         self._total_agencias = int(os.getenv("TOTAL_AGENCIES", "5"))
+        self._estado_lock = threading.Lock()
+        self._persistencia_lock = threading.Lock()
+        self._clientes_lock = threading.Lock()
+        self._threads_lock = threading.Lock()
+        self._client_sockets = set()
+        self._threads = []
 
     def shutdown(self):
-        self._shutting_down = True
+        with self._estado_lock:
+            self._shutting_down = True
 
-        if self._client_socket is not None:
-            self._client_socket.close()
-            self._client_socket = None
-            logging.info('action: close_socket | result: success')
+        with self._clientes_lock:
+            for client_socket in list(self._client_sockets):
+                client_socket.close()
+                logging.info('action: close_socket | result: success')
+            self._client_sockets.clear()
 
         if self._server_socket is not None:
             self._server_socket.close()
@@ -39,17 +48,29 @@ class Server:
         finishes, servers starts to accept new connections again
         """
 
-        while not self._shutting_down:
+        while not self.__esta_apagandose():
             try:
                 client_sock = self.__accept_new_connection()
             except OSError as e:
-                if self._shutting_down:
+                if self.__esta_apagandose():
                     break
 
                 logging.error(f'action: accept_connections | result: fail | error: {e}')
                 continue
 
-            self.__handle_client_connection(client_sock)
+            if client_sock is None:
+                continue
+
+            thread = threading.Thread(target=self.__handle_client_connection, args=(client_sock,))
+            thread.start()
+            with self._threads_lock:
+                self._threads.append(thread)
+
+        with self._threads_lock:
+            threads = list(self._threads)
+
+        for thread in threads:
+            thread.join()
 
         logging.info('action: shutdown | result: success')
 
@@ -60,7 +81,9 @@ class Server:
         If a problem arises in the communication with the client, the
         client socket will also be closed
         """
-        self._client_socket = client_sock
+        with self._clientes_lock:
+            self._client_sockets.add(client_sock)
+
         reader = client_sock.makefile('r', encoding='utf-8', newline='\n')
 
         try:
@@ -75,18 +98,20 @@ class Server:
             else:
                 raise ValueError('comando invalido')
         except OSError as e:
-            if not self._shutting_down:
+            if not self.__esta_apagandose():
                 client_sock.sendall(b'ERROR\n')
         except (ValueError, KeyError) as e:
             client_sock.sendall(b'ERROR\n')
         finally:
             reader.close()
             client_sock.close()
-            self._client_socket = None
+            with self._clientes_lock:
+                self._client_sockets.discard(client_sock)
 
     def __procesar_batch(self, encabezado, reader, client_sock):
         apuestas = self.__recv_batch(encabezado, reader)
-        store_bets(apuestas)
+        with self._persistencia_lock:
+            store_bets(apuestas)
         for apuesta in apuestas:
             logging.info(
                 f'action: apuesta_almacenada | result: success | dni: {apuesta.document} | numero: {apuesta.number}'
@@ -96,10 +121,16 @@ class Server:
 
     def __procesar_fin(self, encabezado, client_sock):
         _, agencia = encabezado.split('|', 1)
-        self._agencias_finalizadas.add(agencia)
+        sorteo_recien_realizado = False
 
-        if not self._sorteo_realizado and len(self._agencias_finalizadas) >= self._total_agencias:
-            self._sorteo_realizado = True
+        with self._estado_lock:
+            self._agencias_finalizadas.add(agencia)
+
+            if not self._sorteo_realizado and len(self._agencias_finalizadas) >= self._total_agencias:
+                self._sorteo_realizado = True
+                sorteo_recien_realizado = True
+
+        if sorteo_recien_realizado:
             logging.info('action: sorteo | result: success')
 
         client_sock.sendall(b'OK\n')
@@ -107,14 +138,18 @@ class Server:
     def __procesar_consulta_ganadores(self, encabezado, client_sock):
         _, agencia = encabezado.split('|', 1)
 
-        if not self._sorteo_realizado:
+        with self._estado_lock:
+            sorteo_realizado = self._sorteo_realizado
+
+        if not sorteo_realizado:
             client_sock.sendall(b'PENDING\n')
             return
 
         ganadores = []
-        for apuesta in load_bets():
-            if str(apuesta.agency) == agencia and has_won(apuesta):
-                ganadores.append(apuesta.document)
+        with self._persistencia_lock:
+            for apuesta in load_bets():
+                if str(apuesta.agency) == agencia and has_won(apuesta):
+                    ganadores.append(apuesta.document)
 
         respuesta = "WINNERS|{}".format(len(ganadores))
         client_sock.sendall((respuesta + "\n").encode('utf-8'))
@@ -155,6 +190,10 @@ class Server:
 
         return linea.rstrip('\n')
 
+    def __esta_apagandose(self):
+        with self._estado_lock:
+            return self._shutting_down
+
     def __accept_new_connection(self):
         """
         Accept new connections
@@ -165,6 +204,9 @@ class Server:
 
         # Connection arrived
         logging.info('action: accept_connections | result: in_progress')
-        c, addr = self._server_socket.accept()
+        try:
+            c, addr = self._server_socket.accept()
+        except socket.timeout:
+            return None
         logging.info(f'action: accept_connections | result: success | ip: {addr[0]}')
         return c
