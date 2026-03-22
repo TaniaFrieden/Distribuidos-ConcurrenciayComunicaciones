@@ -2,7 +2,7 @@ package common
 
 import (
 	"bufio"
-	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -35,12 +35,12 @@ type Client struct {
 }
 
 type betMessage struct {
-	Agency    string `json:"agency"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name"`
-	Document  string `json:"document"`
-	Birthdate string `json:"birthdate"`
-	Number    string `json:"number"`
+	Agency    string
+	FirstName string
+	LastName  string
+	Document  string
+	Birthdate string
+	Number    string
 }
 
 // NewClient Initializes a new client receiving the configuration
@@ -105,6 +105,20 @@ func (c *Client) isShuttingDown(stop <-chan struct{}) bool {
 	}
 }
 
+func (c *Client) serializarApuesta(apuesta betMessage) []byte {
+	linea := fmt.Sprintf(
+		"APUESTA|%s|%s|%s|%s|%s|%s\n",
+		apuesta.Agency,
+		apuesta.FirstName,
+		apuesta.LastName,
+		apuesta.Document,
+		apuesta.Birthdate,
+		apuesta.Number,
+	)
+
+	return []byte(linea)
+}
+
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop(stop <-chan struct{}) {
 	if c.isShuttingDown(stop) {
@@ -126,7 +140,7 @@ func (c *Client) StartClientLoop(stop <-chan struct{}) {
 		return
 	}
 
-	messageData, err := json.Marshal(betMessage{
+	message := c.serializarApuesta(betMessage{
 		Agency:    c.config.ID,
 		FirstName: c.config.FirstName,
 		LastName:  c.config.LastName,
@@ -134,17 +148,6 @@ func (c *Client) StartClientLoop(stop <-chan struct{}) {
 		Birthdate: c.config.Birthdate,
 		Number:    c.config.Number,
 	})
-	if err != nil {
-		c.closeConnection()
-		log.Errorf("action: apuesta_enviada | result: fail | dni: %v | numero: %v | error: %v",
-			c.config.Document,
-			c.config.Number,
-			err,
-		)
-		return
-	}
-
-	message := append(messageData, '\n')
 	for len(message) > 0 {
 		n, err := conn.Write(message)
 		if err != nil {

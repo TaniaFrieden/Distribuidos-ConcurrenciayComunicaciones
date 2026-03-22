@@ -1,6 +1,5 @@
 import socket
 import logging
-import json
 
 from common.utils import Bet, store_bets
 
@@ -60,15 +59,7 @@ class Server:
         self._client_socket = client_sock
 
         try:
-            bet_data = json.loads(self.__recv_line(client_sock))
-            bet = Bet(
-                bet_data["agency"],
-                bet_data["first_name"],
-                bet_data["last_name"],
-                bet_data["document"],
-                bet_data["birthdate"],
-                bet_data["number"],
-            )
+            bet = self.__parse_bet_message(self.__recv_line(client_sock))
             store_bets([bet])
             logging.info(
                 f'action: apuesta_almacenada | result: success | dni: {bet.document} | numero: {bet.number}'
@@ -77,11 +68,28 @@ class Server:
         except OSError as e:
             if not self._shutting_down:
                 logging.error(f'action: apuesta_almacenada | result: fail | error: {e}')
-        except (ValueError, KeyError, json.JSONDecodeError) as e:
+        except ValueError as e:
             logging.error(f'action: apuesta_almacenada | result: fail | error: {e}')
         finally:
             client_sock.close()
             self._client_socket = None
+
+    def __parse_bet_message(self, line):
+        parts = line.split('|')
+        if len(parts) != 7:
+            raise ValueError('cantidad invalida de campos')
+
+        if parts[0] != 'APUESTA':
+            raise ValueError('tipo de mensaje invalido')
+
+        return Bet(
+            parts[1],
+            parts[2],
+            parts[3],
+            parts[4],
+            parts[5],
+            parts[6],
+        )
 
     def __recv_line(self, client_sock):
         chunks = []
