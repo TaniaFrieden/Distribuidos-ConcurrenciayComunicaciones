@@ -22,6 +22,12 @@ class Server:
 
         self._total_agencias = int(total_agencias)
         self._ganadores_por_agencia = {}
+        self._estado_lock = threading.Lock()
+        self._persistencia_lock = threading.Lock()
+        self._clientes_lock = threading.Lock()
+        self._threads_lock = threading.Lock()
+        self._client_sockets = set()
+        self._threads = []
 
     def shutdown(self):
         with self._estado_lock:
@@ -109,8 +115,9 @@ class Server:
 
     def __procesar_batch(self, encabezado, reader, client_sock):
         apuestas = self.__recv_batch(encabezado, reader)
-        store_bets(apuestas)
-        self.__registrar_ganadores(apuestas)
+        with self._persistencia_lock:
+            store_bets(apuestas)
+            self.__registrar_ganadores(apuestas)
         for apuesta in apuestas:
             logging.info(
                 f'action: apuesta_almacenada | result: success | dni: {apuesta.document} | numero: {apuesta.number}'
@@ -144,7 +151,8 @@ class Server:
             client_sock.sendall(b'PENDING\n')
             return
 
-        ganadores = self._ganadores_por_agencia.get(agencia, [])
+        with self._persistencia_lock:
+            ganadores = list(self._ganadores_por_agencia.get(agencia, []))
 
         respuesta = "WINNERS|{}".format(len(ganadores))
         client_sock.sendall((respuesta + "\n").encode('utf-8'))
