@@ -3,7 +3,7 @@ import logging
 import os
 import threading
 
-from common.utils import Bet, has_won, load_bets, store_bets
+from common.utils import Bet, has_won, store_bets
 
 
 class Server:
@@ -16,13 +16,12 @@ class Server:
         self._shutting_down = False
         self._agencias_finalizadas = set()
         self._sorteo_realizado = False
-        self._total_agencias = int(os.getenv("TOTAL_AGENCIES", "5"))
-        self._estado_lock = threading.Lock()
-        self._persistencia_lock = threading.Lock()
-        self._clientes_lock = threading.Lock()
-        self._threads_lock = threading.Lock()
-        self._client_sockets = set()
-        self._threads = []
+        total_agencias = os.getenv("TOTAL_AGENCIES")
+        if total_agencias is None:
+            raise ValueError("TOTAL_AGENCIES no definido")
+
+        self._total_agencias = int(total_agencias)
+        self._ganadores_por_agencia = {}
 
     def shutdown(self):
         with self._estado_lock:
@@ -110,8 +109,8 @@ class Server:
 
     def __procesar_batch(self, encabezado, reader, client_sock):
         apuestas = self.__recv_batch(encabezado, reader)
-        with self._persistencia_lock:
-            store_bets(apuestas)
+        store_bets(apuestas)
+        self.__registrar_ganadores(apuestas)
         for apuesta in apuestas:
             logging.info(
                 f'action: apuesta_almacenada | result: success | dni: {apuesta.document} | numero: {apuesta.number}'
@@ -145,14 +144,21 @@ class Server:
             client_sock.sendall(b'PENDING\n')
             return
 
-        ganadores = []
-        with self._persistencia_lock:
-            for apuesta in load_bets():
-                if str(apuesta.agency) == agencia and has_won(apuesta):
-                    ganadores.append(apuesta.document)
+        ganadores = self._ganadores_por_agencia.get(agencia, [])
 
         respuesta = "WINNERS|{}".format(len(ganadores))
         client_sock.sendall((respuesta + "\n").encode('utf-8'))
+
+    def __registrar_ganadores(self, apuestas):
+        for apuesta in apuestas:
+            if not has_won(apuesta):
+                continue
+
+            agencia = str(apuesta.agency)
+            if agencia not in self._ganadores_por_agencia:
+                self._ganadores_por_agencia[agencia] = []
+
+            self._ganadores_por_agencia[agencia].append(apuesta.document)
 
     def __recv_batch(self, encabezado, reader):
         tipo, cantidad = encabezado.split('|', 1)
