@@ -237,6 +237,67 @@ func (c *Client) enviarBatch(batch []apuesta, stop <-chan struct{}) error {
 	return nil
 }
 
+func (c *Client) enviarComando(comando string) (string, error) {
+	if err := c.createClientSocket(); err != nil {
+		return "", err
+	}
+	defer c.closeConnection()
+
+	conn := c.currentConnection()
+	if conn == nil {
+		return "", fmt.Errorf("no se pudo obtener la conexion actual")
+	}
+
+	if err := c.enviarTodo(conn, []byte(comando+"\n")); err != nil {
+		return "", err
+	}
+
+	respuesta, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(respuesta), nil
+}
+
+func (c *Client) notificarFin() error {
+	respuesta, err := c.enviarComando("FIN|" + c.config.ID)
+	if err != nil {
+		return err
+	}
+
+	if respuesta != "OK" {
+		return fmt.Errorf("respuesta invalida al notificar fin")
+	}
+
+	return nil
+}
+
+func (c *Client) consultarGanadores(stop <-chan struct{}) error {
+	for !c.estaApagandose(stop) {
+		respuesta, err := c.enviarComando("WINNERS|" + c.config.ID)
+		if err != nil {
+			return err
+		}
+
+		if respuesta == "PENDING" {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		partes := strings.Split(respuesta, "|")
+		if len(partes) < 2 || partes[0] != "WINNERS" {
+			return fmt.Errorf("respuesta invalida al consultar ganadores")
+		}
+
+		log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %s", partes[1])
+		return nil
+	}
+
+	log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+	return nil
+}
+
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop(stop <-chan struct{}) {
 	if c.estaApagandose(stop) {
@@ -257,5 +318,24 @@ func (c *Client) StartClientLoop(stop <-chan struct{}) {
 		return
 	}
 
-	log.Infof("action: loop_finished | result: success | client_id: %v", c.config.ID)
+	if err := c.notificarFin(); err != nil {
+		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
+			c.config.ID,
+			err,
+		)
+		return
+	}
+
+	if err := c.consultarGanadores(stop); err != nil {
+		if c.estaApagandose(stop) {
+			log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
+			return
+		}
+
+		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
+			c.config.ID,
+			err,
+		)
+		return
+	}
 }
