@@ -179,3 +179,189 @@ Se proveen [pruebas automáticas](https://github.com/7574-sistemas-distribuidos/
 
 El incumplimiento de las pruebas es condición de desaprobación, pero su cumplimiento no es suficiente para la aprobación.  Se pide a los alumnos leer atentamente y **tener en cuenta** los criterios de corrección informados  [en el campus](https://campusgrado.fi.uba.ar/mod/page/view.php?id=73393).
 Respetar el formato y contenido las entradas de logs descritas en los ejercicios, pues son las que se chequean en cada uno de los tests.
+
+## Seccion de Entrega
+
+Esta seccion resume como ejecutar cada ejercicio y los aspectos principales de la solucion implementada.
+
+### Requisitos
+
+- Docker y Docker Compose instalados
+- `make`
+- permisos de ejecucion para los scripts:
+
+```bash
+chmod +x generar-compose.sh
+chmod +x validar-echo-server.sh
+```
+
+### Flujo comun de ejecucion
+
+Para la mayoria de los ejercicios el flujo base es:
+
+```bash
+./generar-compose.sh docker-compose-dev.yaml <cantidad_clientes>
+make docker-compose-up
+make docker-compose-logs
+make docker-compose-down
+```
+
+### Como ejecutar cada ejercicio
+
+#### Ejercicio 1
+
+Pararse en la rama `ej1` y generar el compose con la cantidad de clientes deseada:
+
+```bash
+git switch ej1
+./generar-compose.sh docker-compose-dev.yaml 5
+make docker-compose-up
+make docker-compose-logs
+make docker-compose-down
+```
+
+#### Ejercicio 2
+
+Pararse en `ej2`, levantar el entorno y modificar `client/config.yaml` o `server/config.ini`. La configuracion se inyecta por volumen, por lo que no hace falta reconstruir imagen para que el cambio exista dentro del container.
+
+```bash
+git switch ej2
+./generar-compose.sh docker-compose-dev.yaml 1
+make docker-compose-up
+make docker-compose-logs
+make docker-compose-down
+```
+
+#### Ejercicio 3
+
+Pararse en `ej3`, levantar solo el servidor y ejecutar el script de validacion:
+
+```bash
+git switch ej3
+./generar-compose.sh docker-compose-dev.yaml 0
+make docker-compose-up
+sh validar-echo-server.sh
+make docker-compose-down
+```
+
+#### Ejercicio 4
+
+Pararse en `ej4` y ejecutar normalmente el compose. El graceful shutdown se observa cuando se baja el entorno:
+
+```bash
+git switch ej4
+./generar-compose.sh docker-compose-dev.yaml 1
+make docker-compose-up
+make docker-compose-down
+```
+
+#### Ejercicio 5
+
+Pararse en `ej5` y levantar un cliente para observar el envio de una apuesta y su almacenamiento:
+
+```bash
+git switch ej5
+./generar-compose.sh docker-compose-dev.yaml 1
+make docker-compose-up
+make docker-compose-logs
+make docker-compose-down
+```
+
+#### Ejercicio 6
+
+Pararse en `ej6`. Cada cliente lee su archivo `.data/agency-N.csv` y envia apuestas en batches:
+
+```bash
+git switch ej6
+./generar-compose.sh docker-compose-dev.yaml 1
+make docker-compose-up
+make docker-compose-logs
+make docker-compose-down
+```
+
+#### Ejercicio 7
+
+Pararse en `ej7`. Despues de enviar los batches, cada cliente notifica fin y consulta sus ganadores:
+
+```bash
+git switch ej7
+./generar-compose.sh docker-compose-dev.yaml 5
+make docker-compose-up
+make docker-compose-logs
+make docker-compose-down
+```
+
+#### Ejercicio 8
+
+Pararse en `ej8`. El servidor procesa conexiones en paralelo y mantiene sincronizado el estado compartido:
+
+```bash
+git switch ej8
+./generar-compose.sh docker-compose-dev.yaml 5
+make docker-compose-up
+make docker-compose-logs
+make docker-compose-down
+```
+
+### Protocolo de comunicacion implementado
+
+La parte de comunicaciones evoluciona a lo largo del TP:
+
+- `ej5`: protocolo textual para una apuesta individual
+  `APUESTA|agencia|nombre|apellido|dni|fecha_nacimiento|numero`
+- `ej6`: batches con encabezado
+  `BATCH|cantidad`
+- `ej7` y `ej8`: se agregan comandos de control
+  `FIN|id_agencia`
+  `WINNERS|id_agencia`
+
+Se eligio un protocolo textual simple, sin JSON ni librerias de serializacion, para mantener separada la capa de comunicacion del modelo de dominio.
+
+### Mecanismos de sincronizacion utilizados
+
+En `ej8`, el servidor se alinea con el modelo de **Estado Mutable Compartido**:
+
+- el hilo principal acepta conexiones
+- por cada conexion crea un thread
+- los datos compartidos se protegen con locks
+
+Locks utilizados:
+
+- `_estado_lock`: protege shutdown, agencias finalizadas y estado del sorteo
+- `_persistencia_lock`: protege persistencia y estructura de ganadores
+- `_clientes_lock`: protege sockets activos
+- `_threads_lock`: protege la lista de threads
+
+### Resumen de cada ejercicio
+
+#### Ejercicio 1
+
+Se implemento `generar-compose.sh` para generar dinamicamente un `docker-compose` con una cantidad configurable de clientes. Se eligio resolverlo en Bash porque era suficiente para construir el archivo de salida de forma simple, sin sumar dependencias ni complejidad extra. La decision principal fue usar un loop para crear `client1`, `client2`, ..., `clientN`, evitando duplicar manualmente bloques YAML.
+
+#### Ejercicio 2
+
+Se desacoplo la configuracion de las imagenes Docker montando `config.ini` y `config.yaml` como volumenes externos de solo lectura. Se eligio esta solucion porque la configuracion cambia con mas frecuencia que la aplicacion, y conviene que viva fuera de la imagen para poder modificarla sin reconstruir todo el entorno.
+
+#### Ejercicio 3
+
+Se implemento `validar-echo-server.sh`, que usa `netcat` dentro de un contenedor temporal para verificar el echo server sin instalar nada en el host. Se eligio correr `nc` desde un contenedor conectado a la red Docker del proyecto porque asi la validacion se hace en el mismo entorno de red en el que vive el servidor, sin depender de herramientas externas ni abrir puertos hacia afuera.
+
+#### Ejercicio 4
+
+Se agrego graceful shutdown en cliente y servidor, asegurando cierre correcto de sockets y salida ordenada ante `SIGTERM`. Se tomo esta decision porque un cierre abrupto deja recursos abiertos y vuelve inestable el sistema, especialmente cuando despues aparecen mas estado, mas conexiones y mas coordinacion entre procesos.
+
+#### Ejercicio 5
+
+Se cambio la logica al caso de loteria y se implemento un protocolo textual propio para enviar y almacenar apuestas individuales. Se eligio un protocolo manual de texto y no JSON porque era una forma simple de controlar exactamente el formato del mensaje, hacerlo facil de generar desde Go y de parsear desde Python, y mantener separada la capa de comunicacion del modelo de dominio.
+
+#### Ejercicio 6
+
+Se agrego procesamiento por batches, lectura de apuestas desde `.data/agency-N.csv` y envio de batches sin cargar todo el archivo en memoria. Se eligio un encabezado `BATCH|cantidad` porque era simple de generar y de parsear. Tambien se corrigio la lectura del CSV para hacerla en streaming, de modo que en memoria solo exista el batch actual y no toda la agencia completa, lo que hace la solucion mas razonable para archivos de mayor tamaño.
+
+#### Ejercicio 7
+
+Se agregaron las notificaciones de fin y la consulta de ganadores. El servidor espera a todas las agencias antes de habilitar el sorteo y responde solo los ganadores de la agencia consultante. Se eligio este esquema porque el problema necesitaba una forma clara de saber cuando todas las agencias habian terminado antes de avanzar, y porque cada cliente solo necesita la informacion correspondiente a su propia agencia. Ademas, los ganadores se guardan por agencia en memoria para no releer el archivo completo en cada consulta.
+
+#### Ejercicio 8
+
+Se implemento un servidor concurrente con multithreading, un thread por conexion y proteccion de secciones criticas mediante locks sobre estado mutable compartido. Se eligio este enfoque porque era una forma directa de paralelizar la atencion de clientes sin cambiar por completo la estructura previa del servidor. La sincronizacion con locks se uso para proteger el estado compartido del sorteo, la persistencia, los sockets activos y la lista de threads, manteniendo consistencia mientras varios clientes operan al mismo tiempo.
