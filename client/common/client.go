@@ -105,36 +105,69 @@ func (c *Client) rutaArchivoAgencia() string {
 	return fmt.Sprintf("/data/agency-%s.csv", c.config.ID)
 }
 
-func (c *Client) cargarApuestas() ([]apuesta, error) {
+func (c *Client) tamanioBatch() int {
+	if c.config.MaxBatchAmount <= 0 {
+		return 1
+	}
+
+	return c.config.MaxBatchAmount
+}
+
+func (c *Client) apuestaDesdeRegistro(registro []string) (apuesta, error) {
+	if len(registro) != 5 {
+		return apuesta{}, fmt.Errorf("registro invalido, se esperaban 5 columnas y llegaron %d", len(registro))
+	}
+
+	return apuesta{
+		Agency:    c.config.ID,
+		FirstName: strings.TrimSpace(registro[0]),
+		LastName:  strings.TrimSpace(registro[1]),
+		Document:  strings.TrimSpace(registro[2]),
+		Birthdate: strings.TrimSpace(registro[3]),
+		Number:    strings.TrimSpace(registro[4]),
+	}, nil
+}
+
+func (c *Client) enviarApuestasDesdeArchivo(stop <-chan struct{}) error {
 	archivo, err := os.Open(c.rutaArchivoAgencia())
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer archivo.Close()
 
 	lector := csv.NewReader(archivo)
-	registros, err := lector.ReadAll()
-	if err != nil {
-		return nil, err
-	}
+	tamanioBatch := c.tamanioBatch()
+	batch := make([]apuesta, 0, tamanioBatch)
 
-	apuestas := make([]apuesta, 0, len(registros))
-	for _, registro := range registros {
-		if len(registro) != 5 {
-			return nil, fmt.Errorf("registro invalido, se esperaban 5 columnas y llegaron %d", len(registro))
+	for {
+		registro, err := lector.Read()
+		if err == io.EOF {
+			if len(batch) == 0 {
+				return nil
+			}
+
+			return c.enviarBatch(batch, stop)
+		}
+		if err != nil {
+			return err
 		}
 
-		apuestas = append(apuestas, apuesta{
-			Agency:    c.config.ID,
-			FirstName: strings.TrimSpace(registro[0]),
-			LastName:  strings.TrimSpace(registro[1]),
-			Document:  strings.TrimSpace(registro[2]),
-			Birthdate: strings.TrimSpace(registro[3]),
-			Number:    strings.TrimSpace(registro[4]),
-		})
-	}
+		apuestaActual, err := c.apuestaDesdeRegistro(registro)
+		if err != nil {
+			return err
+		}
 
-	return apuestas, nil
+		batch = append(batch, apuestaActual)
+		if len(batch) < tamanioBatch {
+			continue
+		}
+
+		if err := c.enviarBatch(batch, stop); err != nil {
+			return err
+		}
+
+		batch = make([]apuesta, 0, tamanioBatch)
+	}
 }
 
 func (c *Client) serializarBatch(batch []apuesta) []byte {
@@ -204,86 +237,6 @@ func (c *Client) enviarBatch(batch []apuesta, stop <-chan struct{}) error {
 	return nil
 }
 
-func (c *Client) enviarComando(comando string) (string, error) {
-	if err := c.createClientSocket(); err != nil {
-		return "", err
-	}
-	defer c.closeConnection()
-
-	conn := c.currentConnection()
-	if conn == nil {
-		return "", fmt.Errorf("no se pudo obtener la conexion actual")
-	}
-
-	if err := c.enviarTodo(conn, []byte(comando+"\n")); err != nil {
-		return "", err
-	}
-
-	respuesta, err := bufio.NewReader(conn).ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-
-	return strings.TrimSpace(respuesta), nil
-}
-
-func (c *Client) notificarFin() error {
-	respuesta, err := c.enviarComando("FIN|" + c.config.ID)
-	if err != nil {
-		return err
-	}
-
-	if respuesta != "OK" {
-		return fmt.Errorf("respuesta invalida al notificar fin")
-	}
-
-	return nil
-}
-
-func (c *Client) consultarGanadores(stop <-chan struct{}) error {
-	for !c.estaApagandose(stop) {
-		respuesta, err := c.enviarComando("WINNERS|" + c.config.ID)
-		if err != nil {
-			return err
-		}
-
-		if respuesta == "PENDING" {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
-
-		partes := strings.Split(respuesta, "|")
-		if len(partes) < 2 || partes[0] != "WINNERS" {
-			return fmt.Errorf("respuesta invalida al consultar ganadores")
-		}
-
-		log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %s", partes[1])
-		return nil
-	}
-
-	log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
-	return nil
-}
-
-func (c *Client) lotes(apuestas []apuesta) [][]apuesta {
-	tamanioBatch := c.config.MaxBatchAmount
-	if tamanioBatch <= 0 {
-		tamanioBatch = 1
-	}
-
-	var lotes [][]apuesta
-	for inicio := 0; inicio < len(apuestas); inicio += tamanioBatch {
-		fin := inicio + tamanioBatch
-		if fin > len(apuestas) {
-			fin = len(apuestas)
-		}
-
-		lotes = append(lotes, apuestas[inicio:fin])
-	}
-
-	return lotes
-}
-
 // StartClientLoop Send messages to the client until some time threshold is met
 func (c *Client) StartClientLoop(stop <-chan struct{}) {
 	if c.estaApagandose(stop) {
@@ -291,8 +244,7 @@ func (c *Client) StartClientLoop(stop <-chan struct{}) {
 		return
 	}
 
-	apuestas, err := c.cargarApuestas()
-	if err != nil {
+	if err := c.enviarApuestasDesdeArchivo(stop); err != nil {
 		log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
 			c.config.ID,
 			err,
@@ -300,44 +252,8 @@ func (c *Client) StartClientLoop(stop <-chan struct{}) {
 		return
 	}
 
-	for _, batch := range c.lotes(apuestas) {
-		if c.estaApagandose(stop) {
-			log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
-			return
-		}
-
-		if err := c.enviarBatch(batch, stop); err != nil {
-			if c.estaApagandose(stop) {
-				log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
-				return
-			}
-
-			log.Errorf("action: apuesta_enviada | result: fail | client_id: %v | error: %v",
-				c.config.ID,
-				err,
-			)
-			return
-		}
-	}
-
-	if err := c.notificarFin(); err != nil {
-		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
-		return
-	}
-
-	if err := c.consultarGanadores(stop); err != nil {
-		if c.estaApagandose(stop) {
-			log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
-			return
-		}
-
-		log.Errorf("action: consulta_ganadores | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
+	if c.estaApagandose(stop) {
+		log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)
 		return
 	}
 
