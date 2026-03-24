@@ -7,3 +7,4 @@ bin/
 *.pdf
 *.md
 *.cpython-312.pyc
+*.csv
