@@ -118,9 +118,9 @@ class Server:
             return
 
         ganadores = self._ganadores_por_agencia.get(agencia, [])
-
-        respuesta = "WINNERS|{}".format(len(ganadores))
-        client_sock.sendall((respuesta + "\n").encode('utf-8'))
+        respuesta = ["WINNERS", str(len(ganadores))]
+        respuesta.extend(ganadores)
+        client_sock.sendall(("|".join(respuesta) + "\n").encode('utf-8'))
 
     def __registrar_ganadores(self, apuestas):
         for apuesta in apuestas:
