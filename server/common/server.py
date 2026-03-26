@@ -5,6 +5,9 @@ import threading
 
 from common.utils import Bet, has_won, store_bets
 
+TIMEOUT_CLIENTE = 5
+TIMEOUT_JOIN_THREAD = 6
+
 
 class Server:
     def __init__(self, port, listen_backlog):
@@ -64,18 +67,20 @@ class Server:
                 continue
 
             if client_sock is None:
+                self.__limpiar_threads_finalizados()
                 continue
 
-            thread = threading.Thread(target=self.__handle_client_connection, args=(client_sock,))
+            thread = threading.Thread(target=self.__handle_client_connection, args=(client_sock,), daemon=True)
             thread.start()
             with self._threads_lock:
                 self._threads.append(thread)
+            self.__limpiar_threads_finalizados()
 
         with self._threads_lock:
             threads = list(self._threads)
 
         for thread in threads:
-            thread.join()
+            thread.join(TIMEOUT_JOIN_THREAD)
 
         logging.info('action: shutdown | result: success')
 
@@ -89,7 +94,7 @@ class Server:
         with self._clientes_lock:
             self._client_sockets.add(client_sock)
 
-        client_sock.settimeout(5)
+        client_sock.settimeout(TIMEOUT_CLIENTE)
         reader = client_sock.makefile('r', encoding='utf-8', newline='\n')
 
         try:
@@ -103,11 +108,11 @@ class Server:
                 self.__procesar_consulta_ganadores(encabezado, client_sock)
             else:
                 raise ValueError('comando invalido')
-        except OSError as e:
+        except OSError:
             if not self.__esta_apagandose():
-                client_sock.sendall(b'ERROR\n')
-        except (ValueError, KeyError) as e:
-            client_sock.sendall(b'ERROR\n')
+                self.__enviar_error(client_sock)
+        except (ValueError, KeyError):
+            self.__enviar_error(client_sock)
         finally:
             reader.close()
             client_sock.close()
@@ -208,6 +213,16 @@ class Server:
     def __esta_apagandose(self):
         with self._estado_lock:
             return self._shutting_down
+
+    def __limpiar_threads_finalizados(self):
+        with self._threads_lock:
+            self._threads = [thread for thread in self._threads if thread.is_alive()]
+
+    def __enviar_error(self, client_sock):
+        try:
+            client_sock.sendall(b'ERROR\n')
+        except OSError:
+            pass
 
     def __accept_new_connection(self):
         """
