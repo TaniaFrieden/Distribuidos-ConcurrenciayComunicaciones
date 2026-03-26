@@ -301,7 +301,8 @@ func (c *Client) consultarGanadores(stop <-chan struct{}) error {
 			return fmt.Errorf("respuesta invalida al consultar ganadores")
 		}
 
-		log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %s", partes[1])
+		log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %s | dnis: %s", partes[1], strings.Join(partes[2:], ","))
+
 		return nil
 	}
 
