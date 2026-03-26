@@ -96,25 +96,57 @@ func main() {
 	v, err := InitConfig()
 	if err != nil {
 		log.Criticalf("%s", err)
+		return
 	}
 
 	if err := InitLogger(v.GetString("log.level")); err != nil {
 		log.Criticalf("%s", err)
+		return
 	}
 
 	// Print program config with debugging purposes
 	PrintConfig(v)
+
+	firstName, err := obtenerEnvObligatoria("NOMBRE")
+	if err != nil {
+		log.Criticalf("%s", err)
+		return
+	}
+
+	lastName, err := obtenerEnvObligatoria("APELLIDO")
+	if err != nil {
+		log.Criticalf("%s", err)
+		return
+	}
+
+	document, err := obtenerEnvObligatoria("DOCUMENTO")
+	if err != nil {
+		log.Criticalf("%s", err)
+		return
+	}
+
+	birthdate, err := obtenerEnvObligatoria("NACIMIENTO")
+	if err != nil {
+		log.Criticalf("%s", err)
+		return
+	}
+
+	number, err := obtenerEnvObligatoria("NUMERO")
+	if err != nil {
+		log.Criticalf("%s", err)
+		return
+	}
 
 	clientConfig := common.ClientConfig{
 		ServerAddress: v.GetString("server.address"),
 		ID:            v.GetString("id"),
 		LoopAmount:    v.GetInt("loop.amount"),
 		LoopPeriod:    v.GetDuration("loop.period"),
-		FirstName:     getEnvOrDefault("NOMBRE", "Nombre"+v.GetString("id")),
-		LastName:      getEnvOrDefault("APELLIDO", "Apellido"+v.GetString("id")),
-		Document:      getEnvOrDefault("DOCUMENTO", "3000000"+v.GetString("id")),
-		Birthdate:     getEnvOrDefault("NACIMIENTO", "1990-01-01"),
-		Number:        getEnvOrDefault("NUMERO", "7574"),
+		FirstName:     firstName,
+		LastName:      lastName,
+		Document:      document,
+		Birthdate:     birthdate,
+		Number:        number,
 	}
 
 	client := common.NewClient(clientConfig)
@@ -131,11 +163,11 @@ func main() {
 	client.StartClientLoop(stop)
 }
 
-func getEnvOrDefault(key string, fallback string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return fallback
+func obtenerEnvObligatoria(key string) (string, error) {
+	value, found := os.LookupEnv(key)
+	if !found || value == "" {
+		return "", fmt.Errorf("la variable de entorno %s es obligatoria", key)
 	}
 
-	return value
+	return value, nil
 }
