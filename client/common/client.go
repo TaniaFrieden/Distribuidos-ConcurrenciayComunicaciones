@@ -14,6 +14,11 @@ import (
 
 var log = logging.MustGetLogger("log")
 
+const (
+	intentosConexion = 10
+	esperaConexion   = 200 * time.Millisecond
+)
+
 // ClientConfig Configuration used by the client
 type ClientConfig struct {
 	ID            string
@@ -56,21 +61,29 @@ func NewClient(config ClientConfig) *Client {
 // failure, error is printed in stdout/stderr and exit 1
 // is returned
 func (c *Client) createClientSocket() error {
-	conn, err := net.Dial("tcp", c.config.ServerAddress)
-	if err != nil {
-		log.Criticalf(
-			"action: connect | result: fail | client_id: %v | error: %v",
-			c.config.ID,
-			err,
-		)
-		return err
+	var conn net.Conn
+	var err error
+
+	for intento := 1; intento <= intentosConexion; intento++ {
+		conn, err = net.Dial("tcp", c.config.ServerAddress)
+		if err == nil {
+			c.mu.Lock()
+			c.conn = conn
+			c.mu.Unlock()
+			return nil
+		}
+
+		if intento < intentosConexion {
+			time.Sleep(esperaConexion)
+		}
 	}
 
-	c.mu.Lock()
-	c.conn = conn
-	c.mu.Unlock()
-
-	return nil
+	log.Criticalf(
+		"action: connect | result: fail | client_id: %v | error: %v",
+		c.config.ID,
+		err,
+	)
+	return err
 }
 
 func (c *Client) closeConnection() {
