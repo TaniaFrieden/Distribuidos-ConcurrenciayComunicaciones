@@ -324,6 +324,7 @@ En `ej8`, el servidor se alinea con el modelo de **Estado Mutable Compartido**:
 - el hilo principal acepta conexiones
 - por cada conexion crea un thread
 - los datos compartidos se protegen con locks
+- ademas, se agregan timeouts en sockets y un limite de espera en la consulta de ganadores para reducir el riesgo de bloqueos eternos ante fallas de red o clientes incompletos
 
 Locks utilizados:
 
@@ -364,4 +365,4 @@ Se agregaron las notificaciones de fin y la consulta de ganadores. El servidor e
 
 #### Ejercicio 8
 
-Se implemento un servidor concurrente con multithreading, un thread por conexion y proteccion de secciones criticas mediante locks sobre estado mutable compartido. Se eligio este enfoque porque era una forma directa de paralelizar la atencion de clientes sin cambiar por completo la estructura previa del servidor. La sincronizacion con locks se uso para proteger el estado compartido del sorteo, la persistencia, los sockets activos y la lista de threads, manteniendo consistencia mientras varios clientes operan al mismo tiempo.
+Se implemento un servidor concurrente con multithreading, un thread por conexion y proteccion de secciones criticas mediante locks sobre estado mutable compartido. Se eligio este enfoque porque era una forma directa de paralelizar la atencion de clientes sin cambiar por completo la estructura previa del servidor. La sincronizacion con locks se uso para proteger el estado compartido del sorteo, la persistencia, los sockets activos y la lista de threads, manteniendo consistencia mientras varios clientes operan al mismo tiempo. Ademas, se agregaron timeouts y un limite de reintentos en la consulta de ganadores para disminuir el riesgo de esperas indefinidas.
