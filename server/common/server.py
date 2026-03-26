@@ -157,11 +157,10 @@ class Server:
             client_sock.sendall(b'PENDING\n')
             return
 
-        with self._persistencia_lock:
-            ganadores = list(self._ganadores_por_agencia.get(agencia, []))
-
-        respuesta = "WINNERS|{}".format(len(ganadores))
-        client_sock.sendall((respuesta + "\n").encode('utf-8'))
+        ganadores = self._ganadores_por_agencia.get(agencia, [])
+        respuesta = ["WINNERS", str(len(ganadores))]
+        respuesta.extend(ganadores)
+        client_sock.sendall(("|".join(respuesta) + "\n").encode('utf-8'))
 
     def __registrar_ganadores(self, apuestas):
         for apuesta in apuestas:
