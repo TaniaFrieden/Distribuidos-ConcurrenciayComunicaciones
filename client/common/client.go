@@ -16,6 +16,12 @@ import (
 
 var log = logging.MustGetLogger("log")
 
+const (
+	tiempoEsperaGanadores = 100 * time.Millisecond
+	maxIntentosGanadores  = 100
+	timeoutConexion       = 5 * time.Second
+)
+
 // ClientConfig Configuration used by the client
 type ClientConfig struct {
 	ID             string
@@ -52,13 +58,18 @@ func NewClient(config ClientConfig) *Client {
 // failure, error is printed in stdout/stderr and exit 1
 // is returned
 func (c *Client) createClientSocket() error {
-	conn, err := net.Dial("tcp", c.config.ServerAddress)
+	conn, err := net.DialTimeout("tcp", c.config.ServerAddress, timeoutConexion)
 	if err != nil {
 		log.Criticalf(
 			"action: connect | result: fail | client_id: %v | error: %v",
 			c.config.ID,
 			err,
 		)
+		return err
+	}
+
+	if err := conn.SetDeadline(time.Now().Add(timeoutConexion)); err != nil {
+		conn.Close()
 		return err
 	}
 
@@ -274,14 +285,14 @@ func (c *Client) notificarFin() error {
 }
 
 func (c *Client) consultarGanadores(stop <-chan struct{}) error {
-	for !c.estaApagandose(stop) {
+	for intento := 1; intento <= maxIntentosGanadores && !c.estaApagandose(stop); intento++ {
 		respuesta, err := c.enviarComando("WINNERS|" + c.config.ID)
 		if err != nil {
 			return err
 		}
 
 		if respuesta == "PENDING" {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(tiempoEsperaGanadores)
 			continue
 		}
 
@@ -292,6 +303,10 @@ func (c *Client) consultarGanadores(stop <-chan struct{}) error {
 
 		log.Infof("action: consulta_ganadores | result: success | cant_ganadores: %s", partes[1])
 		return nil
+	}
+
+	if !c.estaApagandose(stop) {
+		return fmt.Errorf("se agoto la espera de ganadores")
 	}
 
 	log.Infof("action: shutdown | result: success | client_id: %v", c.config.ID)

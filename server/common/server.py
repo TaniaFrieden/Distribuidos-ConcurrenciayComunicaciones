@@ -89,6 +89,7 @@ class Server:
         with self._clientes_lock:
             self._client_sockets.add(client_sock)
 
+        client_sock.settimeout(5)
         reader = client_sock.makefile('r', encoding='utf-8', newline='\n')
 
         try:
